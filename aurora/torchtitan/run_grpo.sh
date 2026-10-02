@@ -44,7 +44,11 @@ PPN="${PPN:-4}"
 # but roughly 10x slower.
 TP="${TP:-1}"
 DP_REPLICATE="${DP_REPLICATE:-1}"
-DUMP_FOLDER="${DUMP_FOLDER:-outputs/rl_grpo}"
+# Per-job by default. Concurrent jobs sharing one dump folder interleave their
+# structured logs and rollout samples, and the checkpoint wipe below would
+# delete a sibling run's checkpoint mid-flight. Interactive runs (no PBS_JOBID)
+# keep the plain path.
+DUMP_FOLDER="${DUMP_FOLDER:-outputs/rl_grpo${PBS_JOBID:+_${PBS_JOBID%%.*}}}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 if [ ! -f "${HF_ASSETS_PATH}/config.json" ]; then
@@ -80,7 +84,7 @@ if [ -n "$UNHEALTHY" ]; then
 fi
 
 mkdir -p "${RUN_DIR}/runlogs"
-LOG="${RUN_DIR}/runlogs/run_grpo_$(date +%Y%m%d_%H%M%S)_${NUM_NODES}n.log"
+LOG="${RUN_DIR}/runlogs/run_grpo_$(date +%Y%m%d_%H%M%S)_${NUM_NODES}n${PBS_JOBID:+_${PBS_JOBID%%.*}}.log"
 
 # KEEP_CACHE=1 keeps the Triton cache between runs. Worth it when sweeping
 # configs inside one allocation: recompiling SYCL kernels costs several minutes
