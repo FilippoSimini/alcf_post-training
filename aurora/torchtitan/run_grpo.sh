@@ -94,6 +94,12 @@ echo "=== GRPO+LoRA: ${NUM_NODES}/${AVAILABLE_NODES} nodes x ${PPN} tiles," \
 echo "Nodes: ${ALL_NODES}"
 echo "Log:   ${LOG}"
 
+# Which code produced this run. Without these two lines a log cannot be tied to
+# a repo state, and copies on different machines do drift.
+echo "Repo:  $(git -C "${RUN_DIR}" describe --always --dirty --abbrev=12 2>/dev/null || echo 'not a git checkout') \
+($(git -C "${RUN_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?'))"
+[ -f "${REPOS_DIR}/PINNED.txt" ] && sed 's/^/Venv:  /' "${REPOS_DIR}/PINNED.txt"
+
 # --cpu-bind none is required. At -ppn 1 PALS binds the rank to a single core,
 # and every Monarch actor and vLLM worker forked from it inherits that mask —
 # ~126 threads sharing 1 core of 208, costing 2-4x end to end.

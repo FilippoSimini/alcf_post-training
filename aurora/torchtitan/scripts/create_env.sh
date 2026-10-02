@@ -9,7 +9,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 export BASE_DIR="${BASE_DIR:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
 export REPOS_DIR="${REPOS_DIR:-${BASE_DIR}/venv_repos}"
-export FRAMEWORKS_SCRIPT="${FRAMEWORKS_SCRIPT:-${SCRIPT_DIR}/frameworks_sunspot.sh}"
 
 # XPU support for all three lives in forks. `rl` carries the RL work for
 # torchstore and torchtitan; monarch has no `rl` branch, so it uses
@@ -32,10 +31,20 @@ TORCHTITAN_REPO="${TORCHTITAN_REPO:-https://github.com/songhappy/torchtitan.git}
 TORCHTITAN_REF="${TORCHTITAN_REF:-rl}"
 
 case "${HOSTNAME}" in
-    aurora*|x4*)       module load frameworks ;;
-    sunspot*|uan*|x1*) source "${FRAMEWORKS_SCRIPT}" ;;
+    aurora*|x4*)       SYSTEM=aurora  ;;
+    sunspot*|uan*|x1*) SYSTEM=sunspot ;;
     *) echo "create_env.sh: unrecognized host '${HOSTNAME}'" >&2; exit 1 ;;
 esac
+
+# One stack for both systems: `frameworks` resolves to aurora_frameworks-2026.1.0
+# (torch 2.13.0a0, vllm 0.26.1) on Aurora and Sunspot alike, so a venv built
+# here is comparable across them. scripts/frameworks_sunspot.sh remains for the
+# old 2025.3.1 conda path; select it with FRAMEWORKS_SCRIPT.
+if [ -n "${FRAMEWORKS_SCRIPT:-}" ]; then
+    source "${FRAMEWORKS_SCRIPT}"
+else
+    module load frameworks
+fi
 
 export HTTP_PROXY="${HTTP_PROXY:-http://proxy.alcf.anl.gov:3128}"
 export HTTPS_PROXY="${HTTPS_PROXY:-$HTTP_PROXY}"

@@ -25,7 +25,7 @@ on one node.
 | `scripts/setup_env.sh` | Per-shell: load modules, activate the venv, set defaults |
 | `scripts/hf_env.sh` | Where models live and which model to train |
 | `scripts/download_assets.sh` | Fetch the model into `$DATA_MODEL_PATH` |
-| `scripts/frameworks_sunspot.sh` | Sunspot software stack (miniforge3 + conda env) |
+| `scripts/frameworks_sunspot.sh` | Optional: the older Sunspot stack (miniforge3 + conda), via `FRAMEWORKS_SCRIPT` |
 | `configure_ccl.sh` | oneCCL / libfabric tuning, sourced by `run_grpo.sh` |
 | `submit_grpo.sh` | `qsub` wrapper |
 | `run_grpo.sh` | Launcher: `mpiexec`, one rank per XPU tile |

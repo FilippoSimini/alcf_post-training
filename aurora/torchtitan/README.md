@@ -29,7 +29,7 @@ the shape that scales.
 | `scripts/setup_env.sh` | Per-shell: load modules, activate the venv, set defaults |
 | `scripts/hf_env.sh` | Where models/datasets live and which to use |
 | `scripts/download_assets.sh` | Fetch model and dataset, warm the datasets cache |
-| `scripts/frameworks_sunspot.sh` | Sunspot software stack (miniforge3 + conda env) |
+| `scripts/frameworks_sunspot.sh` | Optional: the older Sunspot stack (miniforge3 + conda), via `FRAMEWORKS_SCRIPT` |
 | `configure_ccl.sh` | oneCCL / libfabric / Level Zero settings |
 | `submit_grpo.sh` | `qsub` wrapper |
 | `run_grpo.sh` | Launcher: `mpiexec -ppn 1`, Monarch spawns the actors |

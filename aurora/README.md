@@ -11,12 +11,19 @@ scripts here work on either — they detect the host and adjust.
 | HBM per tile | 64 GB | 64 GB |
 | Project filesystem | `flare` | `tegu` |
 | Default queue | `next-eval` | `workq` |
-| Software stack | `module load frameworks` | miniforge3 + wheelforge conda env |
+| Software stack | `module load frameworks` | `module load frameworks` |
 
-The software-stack row is the one asymmetry that matters. `module load
-frameworks` does nothing on Sunspot, so `scripts/setup_env.sh` sources
-`scripts/frameworks_sunspot.sh` there instead. Override the path with
-`FRAMEWORKS_SCRIPT` if your site provides a different environment.
+Both systems resolve `frameworks` to the same stack —
+`aurora_frameworks-2026.1.0`, torch 2.13.0a0, vllm 0.26.1 — so a venv built by
+`scripts/create_env.sh` is comparable across them.
+
+This was not always true. Sunspot's default used to be `frameworks/2025.3.1`,
+whose module has a broken dependency on `intel_gpu_umd_aicoe`; the workaround
+was to load the dependencies by hand and `conda activate` the env directly,
+which is what `scripts/frameworks_sunspot.sh` still does. It is kept for that
+older stack and for sites that provide something different — select it with
+`FRAMEWORKS_SCRIPT=scripts/frameworks_sunspot.sh`. When `FRAMEWORKS_SCRIPT` is
+unset, both systems just `module load frameworks`.
 
 ## Device layout
 

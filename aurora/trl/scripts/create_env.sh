@@ -6,13 +6,21 @@ set -eo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 export BASE_DIR="${BASE_DIR:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
-export FRAMEWORKS_SCRIPT="${FRAMEWORKS_SCRIPT:-${SCRIPT_DIR}/frameworks_sunspot.sh}"
 
 case "${HOSTNAME}" in
-    aurora*|x4*)       module load frameworks ;;
-    sunspot*|uan*|x1*) source "${FRAMEWORKS_SCRIPT}" ;;
+    aurora*|x4*)       SYSTEM=aurora  ;;
+    sunspot*|uan*|x1*) SYSTEM=sunspot ;;
     *) echo "create_env.sh: unrecognized host '${HOSTNAME}'" >&2; exit 1 ;;
 esac
+
+# Both systems resolve `frameworks` to aurora_frameworks-2026.1.0. Set
+# FRAMEWORKS_SCRIPT to use scripts/frameworks_sunspot.sh (the 2025.3.1 conda
+# path) instead.
+if [ -n "${FRAMEWORKS_SCRIPT:-}" ]; then
+    source "${FRAMEWORKS_SCRIPT}"
+else
+    module load frameworks
+fi
 
 export HTTP_PROXY="${HTTP_PROXY:-http://proxy.alcf.anl.gov:3128}"
 export HTTPS_PROXY="${HTTPS_PROXY:-$HTTP_PROXY}"

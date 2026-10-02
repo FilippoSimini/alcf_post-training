@@ -13,19 +13,25 @@ _SETUP_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
 
 export BASE_DIR="${BASE_DIR:-$(cd -- "${_SETUP_DIR}/.." && pwd)}"
 export REPOS_DIR="${REPOS_DIR:-${BASE_DIR}/venv_repos}"
-export FRAMEWORKS_SCRIPT="${FRAMEWORKS_SCRIPT:-${_SETUP_DIR}/frameworks_sunspot.sh}"
 
 case "${HOSTNAME}" in
-    aurora*|x4*)
-        export SYSTEM=aurora FSYS=flare
-        module load frameworks ;;
-    sunspot*|uan*|x1*)
-        export SYSTEM=sunspot FSYS=tegu
-        source "${FRAMEWORKS_SCRIPT}" ;;
+    aurora*|x4*)       export SYSTEM=aurora  FSYS=flare ;;
+    sunspot*|uan*|x1*) export SYSTEM=sunspot FSYS=tegu  ;;
     *)
         echo "setup_env.sh: unrecognized host '${HOSTNAME}'" >&2
         return 1 2>/dev/null || exit 1 ;;
 esac
+
+# Both systems resolve `frameworks` to the same stack
+# (aurora_frameworks-2026.1.0: torch 2.13.0a0, vllm 0.26.1), so they share one
+# line. Sunspot needed scripts/frameworks_sunspot.sh while its default was
+# 2025.3.1, whose module had a broken dependency on intel_gpu_umd_aicoe; that
+# is no longer the default. Set FRAMEWORKS_SCRIPT to go back to the conda path.
+if [ -n "${FRAMEWORKS_SCRIPT:-}" ]; then
+    source "${FRAMEWORKS_SCRIPT}"
+else
+    module load frameworks
+fi
 
 export PBS_QUEUE="${PBS_QUEUE:-$([ "$SYSTEM" = aurora ] && echo next-eval || echo workq)}"
 export PBS_FILESYSTEMS="${PBS_FILESYSTEMS:-home:${FSYS}}"
