@@ -1,0 +1,21 @@
+# Working notes and measured results — not part of the published examples
+JOURNAL.md
+TODO.md
+PLAN.md
+SCALING.md
+
+# Environments and checkouts built by scripts/create_env.sh
+venv/
+venv_repos/
+
+# Run artifacts
+output/
+outputs/
+runlogs/
+*.log
+*.o[0-9]*
+*.e[0-9]*
+
+__pycache__/
+*.pyc
+.DS_Store
