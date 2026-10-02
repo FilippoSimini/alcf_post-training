@@ -32,6 +32,24 @@ done
 # torchtitan's --module takes a fully qualified module path, so our extra
 # configs live in configs/alcf_rl rather than being patched into the checkout.
 export PYTHONPATH="${RUN_DIR}/configs${PYTHONPATH:+:$PYTHONPATH}"
+
+# TORCHTITAN_SRC selects an alternative torchtitan source tree -- typically a
+# `git worktree` of venv_repos/torchtitan carrying a patch -- so a patched and
+# an unpatched arm can run CONCURRENTLY against the same venv.
+#
+# This works because setuptools' PEP 660 editable install registers its finder
+# with sys.meta_path.APPEND, i.e. after the default PathFinder, so sys.path
+# still wins. Verified: with PYTHONPATH set to a worktree, `generator.__file__`
+# resolves into that worktree. If a future setuptools inserts the finder at the
+# front instead, this silently stops working -- which is why the header below
+# prints the resolved path of the module that actually loaded.
+if [ -n "${TORCHTITAN_SRC:-}" ]; then
+    [ -d "${TORCHTITAN_SRC}/torchtitan" ] || {
+        echo "ERROR: TORCHTITAN_SRC=${TORCHTITAN_SRC} has no torchtitan/ package" >&2
+        exit 1
+    }
+    export PYTHONPATH="${TORCHTITAN_SRC}:${PYTHONPATH}"
+fi
 MODULE="${MODULE:-alcf_rl}"
 CONFIG="${CONFIG:-rl_grpo_lora_qwen3_0_6b_lr2e5}"
 NUM_STEPS="${NUM_STEPS:-10}"
@@ -108,19 +126,22 @@ echo "Log:   ${LOG}"
 ($(git -C "${RUN_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?'))"
     [ -f "${REPOS_DIR}/PINNED.txt" ] && sed 's/^/Venv:  /' "${REPOS_DIR}/PINNED.txt"
     # PINNED.txt is written at build time, but the installs are editable, so a
-    # `git apply` in a checkout changes what runs without changing that file.
-    # Report the live state or the log will mislabel a patched run as clean.
-    for r in torchstore monarch torchtitan; do
-        d="${REPOS_DIR}/$r"
-        [ -d "$d/.git" ] || continue
+    # `git apply` in a checkout — or a TORCHTITAN_SRC worktree — changes what
+    # runs without changing that file. Report the live state, or the log will
+    # mislabel a patched run as clean.
+    for d in "${REPOS_DIR}"/torchstore "${REPOS_DIR}"/monarch \
+             "${REPOS_DIR}"/torchtitan "${TORCHTITAN_SRC:-}"; do
+        [ -n "$d" ] && [ -e "$d/.git" ] || continue
         if git -C "$d" diff --quiet 2>/dev/null; then
-            echo "State: $r clean @ $(git -C "$d" rev-parse --short=12 HEAD)"
+            echo "State: $(basename "$d") clean @ $(git -C "$d" rev-parse --short=12 HEAD)"
         else
-            echo "State: $r MODIFIED @ $(git -C "$d" rev-parse --short=12 HEAD) -- \
+            echo "State: $(basename "$d") MODIFIED @ $(git -C "$d" rev-parse --short=12 HEAD) -- \
 $(git -C "$d" diff --shortstat | sed 's/^ *//')"
-            git -C "$d" diff --stat | sed "s/^/State:   /"
         fi
     done
+    # The only claim that cannot be faked by a stale env var: ask Python which
+    # file it actually imports. This is the ground truth for which arm ran.
+    echo "Source: $(python3 -c 'import torchtitan.experiments.rl.actors.generator as g; print(g.__file__)' 2>/dev/null || echo '?')"
 } 2>&1 | tee "$LOG"
 
 # The launcher never returns: after the last step is logged and the generators

@@ -1,17 +1,26 @@
 Un-serialise the generator weight pull.
 
-songhappy/torchtitan's `rl` branch wraps the TorchStore pull in a staggered
-loop over generator nodes. Because the barrier group spans every generator
-rank, the mesh pays `_num_gen_nodes` sequential full-model fetches instead of
-one. Measured on Sunspot: 13.0 s per pull at 8 nodes (4 generator nodes)
-against 1.63 s at 2 nodes (1 generator node) -- a 4x factor that tracks the
-generator node count exactly.
+songhappy/torchtitan's `rl` branch staggers the TorchStore pull across
+generator nodes with a barrier per iteration. Because the barrier group spans
+every generator rank, the mesh pays one sequential full-model fetch per
+generator node instead of one overall. Measured on Sunspot: 13.0 s per pull at
+8 nodes (4 generator nodes) against 1.63 s at 2 nodes (1 generator node) -- a
+4x factor that tracks the generator node count exactly.
 
 Upstream (pytorch/torchtitan nightly be9c85fb2) has no loop here at all, so
 this moves the fork toward upstream rather than away from it.
 
 Applies to: songhappy/torchtitan @ a55da6b4 (branch `rl`).
 Verified with `git apply --check` against that revision.
+
+To check whether a checkout is patched, grep for the loop in CODE, not in the
+file as a whole -- an earlier version of this patch quoted the old loop
+expression in its explanatory comment, which made a plain `grep` report the
+unpatched state on a patched tree:
+
+    grep -n "node_idx" <checkout>/torchtitan/experiments/rl/actors/generator.py
+    # patched:   only the self._my_node_idx assignment (~line 941)
+    # unpatched: also `for node_idx in range(...)` (~line 1300)
 
 --- a/torchtitan/experiments/rl/actors/generator.py
 +++ b/torchtitan/experiments/rl/actors/generator.py
@@ -35,14 +44,14 @@ Verified with `git apply --check` against that revision.
 -                    )
 +            # locally to same-node ranks via xccl.
 +            #
-+            # Upstream has no loop here at all. The fork added a staggered one
-+            # -- `for node_idx in range(self._num_gen_nodes)` with a barrier on
-+            # every iteration -- so that node 0's leader fetched while every
-+            # other generator rank blocked, then node 1's, and so on. Because
-+            # _broadcast_group spans all generator ranks, that cost
-+            # _num_gen_nodes SEQUENTIAL full-model fetches: measured at 8 nodes
-+            # as 13.0 s/pull against 1.63 s with a single generator node, a 4x
-+            # factor matching the 4 generator nodes.
++            # Upstream has no loop here. The fork staggered the pull across
++            # generator nodes with a barrier per iteration, so one node's
++            # leader fetched while every other generator rank blocked, then
++            # the next, and so on. Because _broadcast_group spans all
++            # generator ranks, that cost one SEQUENTIAL full-model fetch per
++            # generator node: measured at 8 nodes as 13.0 s/pull against
++            # 1.63 s with a single generator node, matching its 4 generator
++            # nodes.
 +            #
 +            # Leaders now fetch concurrently. The single barrier below still
 +            # orders every leader's fetch before the intra-node broadcast.
