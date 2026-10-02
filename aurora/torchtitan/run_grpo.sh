@@ -93,16 +93,21 @@ rm -rf "${TORCHTITAN_DIR}/${DUMP_FOLDER}/checkpoint/" 2>/dev/null
 [ -z "${KEEP_CACHE:-}" ] && rm -rf "/tmp/${USER}/torchinductor_xpu/triton" 2>/dev/null
 cd "${TORCHTITAN_DIR}" || exit 1
 
-echo "=== GRPO+LoRA: ${NUM_NODES}/${AVAILABLE_NODES} nodes x ${PPN} tiles," \
-     "${MODULE}/${CONFIG}, TP=${TP} DP_REPLICATE=${DP_REPLICATE}, ${NUM_STEPS} steps ==="
-echo "Nodes: ${ALL_NODES}"
 echo "Log:   ${LOG}"
 
-# Which code produced this run. Without these two lines a log cannot be tied to
-# a repo state, and copies on different machines do drift.
-echo "Repo:  $(git -C "${RUN_DIR}" describe --always --dirty --abbrev=12 2>/dev/null || echo 'not a git checkout') \
+# This header goes INTO the log, not just to the job's stdout. An earlier
+# version echoed it before the tee'd pipeline, so it landed in the PBS .o file
+# and the run log itself carried no provenance at all -- which is the exact
+# failure it was added to prevent.
+{
+    echo "=== GRPO+LoRA: ${NUM_NODES}/${AVAILABLE_NODES} nodes x ${PPN} tiles," \
+         "${MODULE}/${CONFIG}, TP=${TP} DP_REPLICATE=${DP_REPLICATE}, ${NUM_STEPS} steps ==="
+    echo "Nodes: ${ALL_NODES}"
+    echo "Args:  VAL_SAMPLES=${VAL_SAMPLES} EXTRA_ARGS=${EXTRA_ARGS:-none}"
+    echo "Repo:  $(git -C "${RUN_DIR}" describe --always --dirty --abbrev=12 2>/dev/null || echo 'not a git checkout') \
 ($(git -C "${RUN_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?'))"
-[ -f "${REPOS_DIR}/PINNED.txt" ] && sed 's/^/Venv:  /' "${REPOS_DIR}/PINNED.txt"
+    [ -f "${REPOS_DIR}/PINNED.txt" ] && sed 's/^/Venv:  /' "${REPOS_DIR}/PINNED.txt"
+} 2>&1 | tee "$LOG"
 
 # The launcher never returns: after the last step is logged and the generators
 # log shutdown, Monarch/PALS teardown hangs — 25 minutes to the full walltime.
@@ -110,18 +115,22 @@ echo "Repo:  $(git -C "${RUN_DIR}" describe --always --dirty --abbrev=12 2>/dev/
 # exits. This watcher reclaims the idle time; without it every job sits until
 # PBS kills it.
 #
-# The marker differs by mode. With validation on, the controller prints the
-# pre/post summary after the final step, and "Validation reward" appears
-# nowhere else (pre-training validation logs `validation/...`, not
-# `validation_reward`). With it off, the last step line is the end.
+# Both conditions must hold: every step done, AND the post-training validation
+# summary present when validation is on. Requiring the step count too is what
+# makes this safe against periodic validation -- `ValidationConfig` carries a
+# "TODO: enable periodic validation", and the day that lands, a mid-run
+# summary would otherwise look like the end and get the job killed with work
+# still to do. Steps-complete cannot be true early, so the conjunction holds.
 work_is_done() {
     [ -s "$LOG" ] || return 1
-    if [ "${VAL_SAMPLES}" -gt 0 ] 2>/dev/null; then
-        grep -aq "Validation reward" "$LOG"
-    else
-        [ "$(grep -aoE 'Train \| Step: +[0-9]+' "$LOG" 2>/dev/null \
-            | tail -1 | grep -oE '[0-9]+$')" = "$NUM_STEPS" ]
-    fi
+    local done_steps
+    done_steps=$(grep -aoE 'Train \| Step: +[0-9]+' "$LOG" 2>/dev/null \
+        | tail -1 | grep -oE '[0-9]+$')
+    [ "${done_steps:-0}" -ge "$NUM_STEPS" ] 2>/dev/null || return 1
+    # controller.py:835 prints this once, after the last step. Pre-training
+    # validation logs "Validation | Step", which does not match.
+    [ "${VAL_SAMPLES}" -gt 0 ] 2>/dev/null || return 0
+    grep -aq "Validation reward" "$LOG"
 }
 
 (
@@ -158,7 +167,7 @@ WATCHER_PID=$!
     --trainer.parallelism.data_parallel_replicate_degree="$DP_REPLICATE" \
     --dump_folder="$DUMP_FOLDER" \
     $EXTRA_ARGS \
-    2>&1 | tee "$LOG"
+    2>&1 | tee -a "$LOG"
 
 RC=${PIPESTATUS[0]}
 kill "$WATCHER_PID" 2>/dev/null
