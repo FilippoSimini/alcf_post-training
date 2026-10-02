@@ -107,6 +107,20 @@ echo "Log:   ${LOG}"
     echo "Repo:  $(git -C "${RUN_DIR}" describe --always --dirty --abbrev=12 2>/dev/null || echo 'not a git checkout') \
 ($(git -C "${RUN_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?'))"
     [ -f "${REPOS_DIR}/PINNED.txt" ] && sed 's/^/Venv:  /' "${REPOS_DIR}/PINNED.txt"
+    # PINNED.txt is written at build time, but the installs are editable, so a
+    # `git apply` in a checkout changes what runs without changing that file.
+    # Report the live state or the log will mislabel a patched run as clean.
+    for r in torchstore monarch torchtitan; do
+        d="${REPOS_DIR}/$r"
+        [ -d "$d/.git" ] || continue
+        if git -C "$d" diff --quiet 2>/dev/null; then
+            echo "State: $r clean @ $(git -C "$d" rev-parse --short=12 HEAD)"
+        else
+            echo "State: $r MODIFIED @ $(git -C "$d" rev-parse --short=12 HEAD) -- \
+$(git -C "$d" diff --shortstat | sed 's/^ *//')"
+            git -C "$d" diff --stat | sed "s/^/State:   /"
+        fi
+    done
 } 2>&1 | tee "$LOG"
 
 # The launcher never returns: after the last step is logged and the generators
