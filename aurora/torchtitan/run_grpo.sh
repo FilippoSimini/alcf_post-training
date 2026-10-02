@@ -104,6 +104,43 @@ echo "Repo:  $(git -C "${RUN_DIR}" describe --always --dirty --abbrev=12 2>/dev/
 ($(git -C "${RUN_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?'))"
 [ -f "${REPOS_DIR}/PINNED.txt" ] && sed 's/^/Venv:  /' "${REPOS_DIR}/PINNED.txt"
 
+# The launcher never returns: after the last step is logged and the generators
+# log shutdown, Monarch/PALS teardown hangs — 25 minutes to the full walltime.
+# So the run ends when the LOG says the work is done, not when the process
+# exits. This watcher reclaims the idle time; without it every job sits until
+# PBS kills it.
+#
+# The marker differs by mode. With validation on, the controller prints the
+# pre/post summary after the final step, and "Validation reward" appears
+# nowhere else (pre-training validation logs `validation/...`, not
+# `validation_reward`). With it off, the last step line is the end.
+work_is_done() {
+    [ -s "$LOG" ] || return 1
+    if [ "${VAL_SAMPLES}" -gt 0 ] 2>/dev/null; then
+        grep -aq "Validation reward" "$LOG"
+    else
+        [ "$(grep -aoE 'Train \| Step: +[0-9]+' "$LOG" 2>/dev/null \
+            | tail -1 | grep -oE '[0-9]+$')" = "$NUM_STEPS" ]
+    fi
+}
+
+(
+    while sleep 15; do
+        work_is_done || continue
+        sleep 10   # let the final lines flush before killing the writers
+        echo "=== work complete; tearing down (teardown otherwise hangs) ==="
+        # Kills the launcher on every node, including this one, which lets the
+        # foreground mpiexec below return. Stale Monarch workers on port 26601
+        # silently corrupt a later run on the same nodes, so this is not
+        # optional even when the job is about to end.
+        "$MPIEXEC" -n "$NUM_NODES" -ppn 1 --hosts "$ALL_NODES" --cpu-bind none \
+            pkill -9 -f 'multinode_launcher|torchtitan.experiments.rl|monarch|VLLM' \
+            >/dev/null 2>&1
+        break
+    done
+) &
+WATCHER_PID=$!
+
 # --cpu-bind none is required. At -ppn 1 PALS binds the rank to a single core,
 # and every Monarch actor and vLLM worker forked from it inherits that mask —
 # ~126 threads sharing 1 core of 208, costing 2-4x end to end.
@@ -124,9 +161,21 @@ echo "Repo:  $(git -C "${RUN_DIR}" describe --always --dirty --abbrev=12 2>/dev/
     2>&1 | tee "$LOG"
 
 RC=${PIPESTATUS[0]}
-# multinode_launcher.py exits 42 on success, deliberately non-zero so PALS
-# tears down the remaining ranks instead of waiting ~17 minutes for them.
+kill "$WATCHER_PID" 2>/dev/null
+
+# The watcher kills the launcher, so a successful run now exits on a signal.
+# Judge the run by what it produced, not by how the process died — the
+# `exit 42` sentinel below already exists because exit codes here are not
+# meaningful.
 [ "$RC" -eq 42 ] && RC=0
+STEPS_DONE=$(grep -aoE 'Train \| Step: +[0-9]+' "$LOG" 2>/dev/null \
+    | tail -1 | grep -oE '[0-9]+$')
+if [ "${STEPS_DONE:-0}" -ge "$NUM_STEPS" ] 2>/dev/null; then
+    RC=0
+else
+    echo "WARNING: only ${STEPS_DONE:-0}/${NUM_STEPS} steps completed." >&2
+    [ "$RC" -eq 0 ] && RC=1
+fi
 echo "Exit code: $RC"
 echo "Log: $LOG"
 exit "$RC"
