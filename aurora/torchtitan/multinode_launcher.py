@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 
 MONARCH_PORT = 26600
 
+# Refuse a non-LoRA dp_shard above this. The true limit is the smallest trained
+# dim 0 (~1024 for Qwen3-0.6B); this guard fails fast at launch rather than
+# letting FSDP hand out zero-row shards that TorchStore rejects mid-run.
+_NO_LORA_DP_SHARD_GUARD = 512
+
 
 def get_mpi_rank() -> int:
     """Get MPI rank from environment (Cray PALS, PMI, or MPICH)."""
@@ -145,14 +150,13 @@ async def run_controller(
     )
 
     # Scale parallelism to fill allocated GPUs.
-    # Cap dp_shard at the LoRA rank (if LoRA is used) to avoid zero-sized FSDP
-    # shards that TorchStore cannot handle. Excess GPUs go to dp_replicate.
     trainer_total_gpus = num_trainer_nodes * gpus_per_node
     tp = config.trainer.parallelism.tensor_parallel_degree
     pp = config.trainer.parallelism.pipeline_parallel_degree
     cp = config.trainer.parallelism.context_parallel_degree
     dp_replicate = config.trainer.parallelism.data_parallel_replicate_degree
     trainer_dp_shard = trainer_total_gpus // (tp * pp * cp * dp_replicate)
+    dp_width_uncapped = trainer_dp_shard
 
     # Detect LoRA rank from the model config tree. After LoRA conversion,
     # target Linear configs become LoRALinear.Config with `rank` + `alpha`.
@@ -173,13 +177,28 @@ async def run_controller(
                     return r
         return None
 
-    # FSDP shards each param on dim 0, and the smallest LoRA tensor dim is the
-    # LoRA rank, so dp_shard can grow up to the rank without producing zero-sized
-    # shards (which TorchStore cannot handle). Cap at the rank -- NOT a hardcoded
-    # 4 -- so all trainer GPUs go to dp_shard (dp_replicate stays 1) whenever the
-    # rank allows; only spill to dp_replicate past that.
+    # FSDP shards each param on dim 0 and TorchStore cannot look up a zero-row
+    # shard, so dp_shard must not exceed the smallest trained dim 0:
+    #   chunk(32 rows, 24 ranks) -> [2]*16 + [0]*8
+    #   KeyError: Could not find shard slice ... local_shape=(0, 1024)
+    # Under LoRA that minimum IS the rank: lora_a is Linear(in, rank), so its
+    # weight is [rank, in]. Without LoRA the minimum is the smallest real
+    # parameter -- ~1024 for Qwen3-0.6B (RMSNorm weights, KV projections) --
+    # which no mesh we run comes near (64 nodes at PPN=12 gives dp_shard=384).
+    # So: cap at the rank when there is LoRA, do not cap otherwise. The previous
+    # `lora_rank or 4` silently capped every non-LoRA run at dp_shard=4, which
+    # at 8 nodes means dp_shard=4/dp_replicate=12 instead of dp_shard=48 -- a
+    # different parallelism than the LoRA arm it is meant to be compared with.
     lora_rank = _find_lora_rank(config.model_spec.model)
-    max_dp_shard = lora_rank or 4
+    max_dp_shard = lora_rank if lora_rank else dp_width_uncapped
+    if lora_rank is None and dp_width_uncapped > _NO_LORA_DP_SHARD_GUARD:
+        raise ValueError(
+            f"dp_shard={dp_width_uncapped} exceeds the guard of "
+            f"{_NO_LORA_DP_SHARD_GUARD}. Without LoRA the real limit is the "
+            "smallest trained dim 0 (~1024 for Qwen3-0.6B); past it FSDP hands "
+            "trailing ranks zero-row shards and TorchStore fails mid-run. "
+            "Raise the guard deliberately if the model supports it."
+        )
     # dp_shard must DIVIDE the rank, not merely be <= it. A cap alone lets e.g.
     # dp_shard=24 against rank 32 through, and the trailing ranks then get
     # zero-row shards that TorchStore cannot look up:
