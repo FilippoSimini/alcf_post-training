@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 export BASE_DIR="${BASE_DIR:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
 export REPOS_DIR="${REPOS_DIR:-${BASE_DIR}/venv_repos}"
+export PATCHES_DIR="${PATCHES_DIR:-${BASE_DIR}/patches}"
 
 # XPU support for all three lives in forks. `rl` carries the RL work for
 # torchstore and torchtitan; monarch has no `rl` branch, so it uses
@@ -68,6 +69,30 @@ clone_at() {  # repo ref dest
     echo "      $(basename "$3") $2 -> $(git -C "$3" rev-parse HEAD)"
 }
 
+# Local fixes to the upstream forks, applied in filename order. Every patch
+# here is a documented deviation in PLAN.md; the checkouts themselves are
+# never edited by hand, so `git diff` in venv_repos shows exactly the
+# deviations and nothing else.
+#
+# Idempotent: `apply --reverse --check` succeeds only if the patch is already
+# in place, which is what makes re-running create_env.sh on an existing
+# checkout safe.
+apply_patches() {  # repo_dir patch_dir
+    [ -d "$2" ] || return 0
+    for p in "$2"/*.patch; do
+        [ -e "$p" ] || continue
+        if git -C "$1" apply --reverse --check "$p" 2>/dev/null; then
+            echo "      already applied: $(basename "$p")"
+        elif git -C "$1" apply "$p"; then
+            echo "      applied: $(basename "$p")"
+        else
+            echo "ERROR: $(basename "$p") does not apply to $1." >&2
+            echo "       The fork has probably moved; re-cut the patch." >&2
+            exit 1
+        fi
+    done
+}
+
 echo "===== TorchStore"
 clone_at "$TORCHSTORE_REPO" "$TORCHSTORE_REF" "${REPOS_DIR}/torchstore"
 pip install -e "${REPOS_DIR}/torchstore" --no-deps --no-build-isolation
@@ -101,6 +126,7 @@ pip install pyzmq pyarrow requests numpy pyre-extensions "typing-extensions>=4.1
 
 echo "===== TorchTitan"
 clone_at "$TORCHTITAN_REPO" "$TORCHTITAN_REF" "${REPOS_DIR}/torchtitan"
+apply_patches "${REPOS_DIR}/torchtitan" "${PATCHES_DIR}"
 pip install -e "${REPOS_DIR}/torchtitan" --no-deps --no-build-isolation
 pip install tyro tensorboard wandb
 # spmd_types declares torch>=2.10, so it must stay --no-deps or pip pulls a
@@ -116,9 +142,16 @@ PINNED="${REPOS_DIR}/PINNED.txt"
 {
     echo "# built $(date -u +%Y-%m-%dT%H:%M:%SZ) on ${HOSTNAME}"
     for r in torchstore monarch torchtitan; do
-        printf '%-12s %-14s %s\n' "$r" \
+        # A patched checkout is not the SHA alone, so say so: `git describe`
+        # style is not enough here because the patches are uncommitted.
+        dirty=""
+        [ -n "$(git -C "${REPOS_DIR}/$r" status --porcelain 2>/dev/null)" ] && dirty=" +patched"
+        printf '%-12s %-14s %s%s\n' "$r" \
             "$(git -C "${REPOS_DIR}/$r" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
-            "$(git -C "${REPOS_DIR}/$r" rev-parse HEAD 2>/dev/null)"
+            "$(git -C "${REPOS_DIR}/$r" rev-parse HEAD 2>/dev/null)" "$dirty"
+    done
+    for p in "${PATCHES_DIR}"/*.patch; do
+        [ -e "$p" ] && printf 'patch        %s\n' "$(basename "$p")"
     done
 } | tee "$PINNED"
 

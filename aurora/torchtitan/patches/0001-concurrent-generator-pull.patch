@@ -1,0 +1,63 @@
+Un-serialise the generator weight pull.
+
+songhappy/torchtitan's `rl` branch wraps the TorchStore pull in a staggered
+loop over generator nodes. Because the barrier group spans every generator
+rank, the mesh pays `_num_gen_nodes` sequential full-model fetches instead of
+one. Measured on Sunspot: 13.0 s per pull at 8 nodes (4 generator nodes)
+against 1.63 s at 2 nodes (1 generator node) -- a 4x factor that tracks the
+generator node count exactly.
+
+Upstream (pytorch/torchtitan nightly be9c85fb2) has no loop here at all, so
+this moves the fork toward upstream rather than away from it.
+
+Applies to: songhappy/torchtitan @ a55da6b4 (branch `rl`).
+Verified with `git apply --check` against that revision.
+
+--- a/torchtitan/experiments/rl/actors/generator.py
++++ b/torchtitan/experiments/rl/actors/generator.py
+@@ -1295,20 +1295,31 @@
+             await self._get_spmd_state_dict(model_sd, model=model)
+         else:
+             # One leader per node pulls from TorchStore, then broadcasts
+-            # locally to same-node ranks via xccl. For multi-node generators,
+-            # stagger pulls so nodes don't overwhelm TorchStore simultaneously.
+-            for node_idx in range(self._num_gen_nodes):
+-                if node_idx == self._my_node_idx and self._is_node_leader:
+-                    await ts.get_state_dict(
+-                        "model_state_dict",
+-                        user_state_dict=model_sd,
+-                        strict=False,
+-                        direct_rdma=False,
+-                    )
+-                if self._num_gen_nodes > 1:
+-                    await asyncio.to_thread(
+-                        dist.barrier, group=self._broadcast_group
+-                    )
++            # locally to same-node ranks via xccl.
++            #
++            # Upstream has no loop here at all. The fork added a staggered one
++            # -- `for node_idx in range(self._num_gen_nodes)` with a barrier on
++            # every iteration -- so that node 0's leader fetched while every
++            # other generator rank blocked, then node 1's, and so on. Because
++            # _broadcast_group spans all generator ranks, that cost
++            # _num_gen_nodes SEQUENTIAL full-model fetches: measured at 8 nodes
++            # as 13.0 s/pull against 1.63 s with a single generator node, a 4x
++            # factor matching the 4 generator nodes.
++            #
++            # Leaders now fetch concurrently. The single barrier below still
++            # orders every leader's fetch before the intra-node broadcast.
++            # If TorchStore turns out to be overwhelmed by concurrent readers
++            # (the stated reason for the stagger), reintroduce it as BOUNDED
++            # concurrency -- a few nodes at a time -- rather than fully serial.
++            if self._is_node_leader:
++                await ts.get_state_dict(
++                    "model_state_dict",
++                    user_state_dict=model_sd,
++                    strict=False,
++                    direct_rdma=False,
++                )
++            if self._num_gen_nodes > 1:
++                await asyncio.to_thread(dist.barrier, group=self._broadcast_group)
+             tensors = [v for v in model_sd.values() if isinstance(v, torch.Tensor)]
+             await asyncio.to_thread(
+                 dist._broadcast_coalesced,
