@@ -109,7 +109,13 @@ LOG="${RUN_DIR}/runlogs/run_grpo_$(date +%Y%m%d_%H%M%S)_${NUM_NODES}n${PBS_JOBID
 # per run and the kernels do not depend on the knobs being swept.
 rm -rf "${TORCHTITAN_DIR}/${DUMP_FOLDER}/checkpoint/" 2>/dev/null
 [ -z "${KEEP_CACHE:-}" ] && rm -rf "/tmp/${USER}/torchinductor_xpu/triton" 2>/dev/null
-cd "${TORCHTITAN_DIR}" || exit 1
+# cd into the tree that will be imported, not just the installed one. Python
+# puts the cwd at the FRONT of sys.path for `python -c` and for Monarch's
+# spawned actors, ahead of PYTHONPATH — so running from the unpatched checkout
+# silently shadows a TORCHTITAN_SRC worktree in exactly the processes that run
+# the generator. Making cwd the selected tree makes every resolution order
+# (cwd, PYTHONPATH, editable finder) agree on the same source.
+cd "${TORCHTITAN_SRC:-${TORCHTITAN_DIR}}" || exit 1
 
 echo "Log:   ${LOG}"
 
@@ -139,9 +145,13 @@ echo "Log:   ${LOG}"
 $(git -C "$d" diff --shortstat | sed 's/^ *//')"
         fi
     done
-    # The only claim that cannot be faked by a stale env var: ask Python which
-    # file it actually imports. This is the ground truth for which arm ran.
-    echo "Source: $(python3 -c 'import torchtitan.experiments.rl.actors.generator as g; print(g.__file__)' 2>/dev/null || echo '?')"
+    # Ground truth for which arm ran: ask Python which file it imports, from
+    # the same cwd the actors will have. `tail -1` because importing torch
+    # prints warnings to stdout that would otherwise be captured as the path.
+    echo "Source: $(python3 -c 'import torchtitan.experiments.rl.actors.generator as g; print(g.__file__)' 2>/dev/null | tail -1)"
+    echo "Pulled: $(grep -cE '^\s*for node_idx in range' \
+        "$(python3 -c 'import torchtitan.experiments.rl.actors.generator as g; print(g.__file__)' 2>/dev/null | tail -1)" \
+        2>/dev/null | sed 's/^0$/concurrent (patched)/; s/^1$/serialized (stock)/')"
 } 2>&1 | tee "$LOG"
 
 # The launcher never returns: after the last step is logged and the generators
